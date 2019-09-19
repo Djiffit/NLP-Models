@@ -18,7 +18,6 @@ from nltk.stem import PorterStemmer
 from nltk.corpus import sentiwordnet as swn
 
 from nltk.corpus import stopwords
- 
 from random import seed, shuffle
 seed(0)
 
@@ -74,28 +73,36 @@ def extract_features(data):
             counts[wf, sent[ind + 1], sent[ind + 2], sent[ind + 3]] += 1
 
     all_tokens = []
+    feats= [0,0,0,0]
 
-
-    # print(counts.items())
-    # print(sorted(counts.items(), key=operator.itemgetter(1)))
     # Add some special logic for what n grams are added to vocab
     for gram, count in counts.items():
         if type(gram) != tuple and count > 0:
             all_tokens.append(gram)
+            feats[0] += 1
 
-        if type(gram) == tuple and len(gram) == 2 and count > 1:
+        if type(gram) == tuple and len(gram) == 2 and count > 4:
             all_tokens.append(gram)
+            feats[1] += 1
         
-        if type(gram) == tuple and len(gram) > 2 and count > 0:
+        if type(gram) == tuple and len(gram) > 2 and count > 1:
             all_tokens.append(gram)
+            feats[len(gram) - 1] += 1
 
     print(len(all_tokens), 'features in the vector')
+    for ind, feat in enumerate(feats):
+        print(f'Number of {ind + 1} - grams is {feat} ')
 
     encoder = {wf:i for i,wf in enumerate(all_tokens)}
 
     # add all n-grams to feature vector
     for data_set in data.values():
         for i,ex in enumerate(data_set):
+
+            # debug print examples
+            # if np.random.random() < 0.001:
+            #     print(ex)
+
             ex["FEATURES"] = np.zeros(len(all_tokens))
 
             feature_ids = list({encoder[(tok, ((ex["BODY"]+[BIAS]))[ind +1], ((ex["BODY"]+[BIAS]))[ind +2], ((ex["BODY"]+[BIAS]))[ind +3])] for ind, tok in enumerate((ex["BODY"]+[BIAS])[:-3])
@@ -109,7 +116,7 @@ def extract_features(data):
             
             feature_ids = list({encoder[(tok, ((ex["BODY"]+[BIAS]))[ind +1])] for ind, tok in enumerate((ex["BODY"]+[BIAS])[:-1])
                                 if (tok, ((ex["BODY"]+[BIAS]))[ind +1]) in encoder})
-            
+
             ex["FEATURES"][feature_ids] = 1
             feature_ids = list({encoder[tok] for ind, tok in enumerate((ex["BODY"]+[BIAS]))
                                 if tok in encoder})
@@ -123,13 +130,24 @@ def custom_extract_features(data):
         ex["FEATURES"] to each ex in data.
     """
     # Replace this with your own code.
-    tokenizer = nltk.TweetTokenizer(preserve_case=False)
+    tokenizer = nltk.TweetTokenizer(preserve_case=False, reduce_len=True)
     stemmer = PorterStemmer()
     sw = {w: True for w in set(stopwords.words('english'))}
+
+    get_worst = lambda x: max([e.neg_score() for e in x])
+    get_best = lambda x: max([e.pos_score() for e in x])
+
     for data_set in data.values():
         for ex in data_set:
-            # ex['BODY'] = [stemmer.stem(word) for word in tokenizer.tokenize(ex['BODY']) if word not in sw and len(list(swn.senti_synsets(word))) > 0.3 and (list(swn.senti_synsets(word))[0].neg_score() > 0 or list(swn.senti_synsets(word))[0].pos_score() > 0.3)]
-            ex['BODY'] = [stemmer.stem(word) for word in tokenizer.tokenize(ex['BODY']) if word not in sw]
+            # Words that are clearly loaded one way
+            # ex['BODY'] = [(word) for word in tokenizer.tokenize(ex['BODY']) if len(list(swn.senti_synsets(word))) == 0 or np.abs(get_best(list(swn.senti_synsets(word))) - get_worst(list(swn.senti_synsets(word)))) > 0.25]
+            
+            # Preserve words not in the sentinet i.e. likely smileys, abbreviations etc and only keep the words that have at least some sentiment score
+            ex['BODY'] = [(word) for word in tokenizer.tokenize(ex['BODY']) if len(list(swn.senti_synsets(word))) == 0 or (get_best(list(swn.senti_synsets(word))) > 0.1 or get_worst(list(swn.senti_synsets(word))) > 0.1)]
+
+            # Filter stopwords
+            # ex['BODY'] = [(word) for word in (tokenizer.tokenize(ex['BODY'])) if word not in sw]
+            # ex['BODY'] = [(word) for word in (tokenizer.tokenize(ex['BODY']))]
 
     extract_features(data)
 
@@ -162,9 +180,7 @@ class Perceptron:
         self.N = 1
         # This is the lambda hyper-parameter for MIRA. You can tune it
         # using the development set.
-        self.Lambda = 0.1 
-
-        self.reg = 0.05
+        self.Lambda = 1e-1
 
     def classify_ex(self,ex,mode,training=0):
         """
@@ -253,11 +269,11 @@ class Perceptron:
 
             Edit it to compute eta properly.
         """
-        if sys_class == gold_class: return 0
-        corr = np.dot(self.W[gold_class], ex)
+        corr = -np.dot(self.W[gold_class], ex)
         pred = np.dot(self.W[sys_class], ex)
-        loss = max(0, corr * pred) + int(gold_class != sys_class)
-        b = (np.linalg.norm(2 * ex))
+        loss = max(0, corr + pred) + int(gold_class != sys_class)
+        b = (np.linalg.norm(ex) * 2)
+
         return min(1/self.Lambda, loss / b)
 
     def train(self,train_data,dev_data,mode,epochs):
@@ -274,7 +290,16 @@ class Perceptron:
                 self.estimate_ex(ex,mode)
             sys_classes = self.classify(dev_data,mode)
             acc, _ = evaluate(sys_classes, dev_data)
-            print("Dev accuracy %.2f%%" % acc)
+            
+            sys_classes_1 = self.classify(train_data,mode)
+            t_acc, _ = evaluate(sys_classes_1, train_data)
+
+            print("Train accuracy %.2f%%, Dev accuracy %.2f%%" % (t_acc, acc))
+
+            # Let's not overfit too much :^)
+            if t_acc >= 99.5:
+                print('Training accuracy large enough, stopping training')
+                break
             
 if __name__=="__main__":
 #    if len(argv) != 3:
@@ -305,7 +330,8 @@ if __name__=="__main__":
     custom_extract_features(data)
 
     # Use the development set to tune the number of training epochs.
-    epochs = {"basic":15, "averaged":15, "mira":15}
+    epochs = {"basic":40, "averaged":20, "mira":40}
+    # epochs = {"basic":0, "averaged":6, "mira":40}
 
     for mode in MODES:
         print("Training %s model." % mode)
