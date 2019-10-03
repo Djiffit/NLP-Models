@@ -66,7 +66,7 @@ def extract_features(data):
 """
 def normalize_ll(log_likelihoods):
     total = scipy.special.logsumexp(log_likelihoods)
-    return [(p) / total for p in log_likelihoods]
+    return [np.exp(p - total) for p in log_likelihoods]
 
 class NaiveBayes:
     """ 
@@ -116,6 +116,7 @@ class NaiveBayes:
                           ex["FEATURES"])
             log_likelihoods.append((class_prior + likelihood) * 
                                    1 / np.sum(ex["FEATURES"]))
+
         return log_likelihoods
 
     def get_class(self,likelihoods):
@@ -153,7 +154,12 @@ class NaiveBayes:
 
             It is your task to perform updates properly.
         """
+        feats = ex[FEATURES]
         distr = normalize_ll(self.classify_ex(ex))
+        for c in self.Y:
+            self.N[c] += 1 * distr[int(c) - 1] * self.Lambda
+            self.joint_counts[c] += feats * distr[int(c) - 1] * self.Lambda
+            self.feature_counts[c] += np.sum(feats * distr[int(c) - 1] * self.Lambda)
         return distr
 
     def get_loss(self,labeled_train_data,unlabeled_train_data):
@@ -163,27 +169,15 @@ class NaiveBayes:
 
             It is your task to compute the loss properly.
         """
-        loss = 0
+        loss = np.float64(0)
 
-        class_probs = ({(k): v / np.sum([v for k, v in self.N.items()]) for k, v in self.N.items()})
-        total_feats = self.joint_counts['1'] + self.joint_counts['2'] + self.joint_counts['3']
-
-        print(class_probs, np.sum(class_probs))
         for ex in labeled_train_data:
-            feats = ex[FEATURES]
-            c = ex[CLASS]   
-            jc = self.joint_counts[c]
-            print(class_probs, c, class_probs[c])
-            print(-np.sum([np.log(class_probs[c]) + np.log(feats[i] * jc[i] / total_feats[i]) for i in range(len(feats)) if total_feats[i] != 0 and feats[i] != 0]))
+            log_p = self.classify_ex(ex)[int(ex[CLASS]) - 1]
+            loss -= log_p
 
-            # print((self.joint_counts[c] * ex[FEATURES]))
-            # print(np.sum(total_feats== 0), 'zeros' )
-            # print(np.sum(np.log(self.joint_counts[c] * ex[FEATURES] / total_feats)))
-            # print(self.N)
-            break
-
-        for ex in unlabeled_train_data:
-            pass
+        for ex in unlabeled_train_data:   
+            assert(type(loss) == np.float64)
+            loss -= logsumexp(self.classify_ex(ex))
 
         return loss
 
@@ -224,7 +218,7 @@ if __name__=="__main__":
     extract_features(data)
 
     # You can explore the effect of lambda using the test set.
-    lambdas = {10:0.0001, 50:0.0001, 100:0.0001}
+    lambdas = {10:0.1, 50:0.0001, 100:0.0001}
 
     for labeled_size in [10,50,100]:
         print("Experiment with %u labeled examples:" % labeled_size)
