@@ -41,7 +41,7 @@ class HMM:
     """
     def __init__(self, vocab, tags, pos_tags):
         # Alpha for Laplace smoothing.
-        self.alpha = 1
+        self.alpha = .01
 
         self.vocab = {wf:i for i, wf in enumerate(vocab + [UNK])}
         self.tags = {tag:i for i, tag in enumerate([INITIAL] + tags + [FINAL])}
@@ -71,7 +71,7 @@ class HMM:
         # We first reserve a trellis for probabilities and an index trellis.
         trellis = np.full((len(ex["TOKENS"]) + 2,len(self.tags)),-float('inf'))
         indices = -np.ones((len(ex["TOKENS"]) + 2,len(self.tags)))
-
+        
         trellis[0,self.tags[INITIAL]] = 0
 
         # Iteratively compute trellis probabilities pi(i,y) and update
@@ -88,27 +88,26 @@ class HMM:
 
             # Compute pi(i,y) for each possible tag y. You will need
             # to use self.E and self.T. As a starred exercise, you can
-            # add probabilitites from self.E_pos.
+            # add probabilitites from self.E_pos.s
             for tag in self.tags:
                 # Words can't receive the inital or final state tag.
                 if tag in [INITIAL,FINAL]:
                     continue
 
+                tag_index = self.tags[tag]
+                token_index = self.vocab[token]
+
                 # Correctly compute all entries in pi_candidates.
                 # Replace the lines below by your own code.
-                pi_candidates = np.zeros(trellis[i].shape)
-                pi_candidates[self.tags[INITIAL]] = -float('inf')
-                pi_candidates[self.tags[FINAL]] = -float('inf')
 
-                trellis[i+1][self.tags[tag]] = np.max(pi_candidates)
-                indices[i+1][self.tags[tag]] = np.argmax(pi_candidates)
+                candidates = [prob + self.E[tag_index, token_index] + self.T[ind, tag_index] + self.E_pos[tag_index, self.pos_tags[pos]] for ind, prob in enumerate(trellis[i])]
+                trellis[i+1][self.tags[tag]] = np.max(candidates)
+                indices[i+1][self.tags[tag]] = np.argmax(candidates)
 
         # Correctly compute all entries in pi_final_candidates.
         # Replace the lines below by your own code.
-        pi_final_candidates = np.zeros(trellis[len(ex["TOKENS"])].shape)
-        pi_final_candidates[self.tags[INITIAL]] = -float('inf')
-        pi_final_candidates[self.tags[FINAL]] = -float('inf')
 
+        pi_final_candidates = [prob + self.T[ind, self.tags[FINAL]] for ind, prob in enumerate(trellis[i + 1])]
         trellis[len(ex["TOKENS"]) + 1,self.tags[FINAL]] = np.max(pi_final_candidates)
         indices[len(ex["TOKENS"]) + 1,self.tags[FINAL]] = np.argmax(pi_final_candidates)
 
@@ -116,7 +115,7 @@ class HMM:
                                  int(indices[-1,self.tags[FINAL]]))
 
     def classify(self,data):
-        """
+        """f
             This function classifies a data set. 
 
             No need to change this function.
@@ -133,13 +132,13 @@ class HMM:
             As a starred exercise, you can also update POS emission counts.
         """
         for i, (token, tag) in enumerate(zip(ex["TOKENS"],ex["TAGS"])):
-            self.emission_counts[self.pos_tags[tag], self.vocab[token]] += 1
+            self.emission_counts[self.tags[tag], self.vocab[token]] += 1
 
         for tag1, tag2 in zip([INITIAL] + ex["TAGS"], ex["TAGS"] + [FINAL]):
-            self.transition_counts[self.pos_tags[tag1], self.pos_tags[tag2]] += 1
+            self.transition_counts[self.tags[tag1], self.tags[tag2]] += 1
 
         for pos, tag in zip(ex["POS TAGS"],ex["TAGS"]):
-            pass
+            self.pos_emission_counts[self.tags[tag], self.pos_tags[pos]] += 1
 
     def train(self,train_data):
         """
@@ -155,28 +154,34 @@ class HMM:
             self.update_ex(ex)
 
         # Smooth emission counts, normalize and go over to log space.
-        self.E = np.zeros(self.emission_counts.shape)
 
-        print(self.E)
 
+        self.E = self.emission_counts + self.alpha
+        self.E = np.log((self.E.T / np.sum(self.E, axis=1)).T)
+
+        # self.E = np.zeros(self.emission_counts.shape)
         # Smooth transition counts, normalize and go over to log space.
-        self.T = np.zeros(self.transition_counts.shape)
+        self.T = self.transition_counts + self.alpha
+        self.T = np.log((self.T.T / np.sum(self.T, axis=1)).T)
 
         # Smooth POS counts, normalize and go over to log space.
-        self.E_pos = np.zeros(self.pos_emission_counts.shape)
+        self.E_pos = self.pos_emission_counts + self.alpha
+        self.E_pos = np.log((self.E_pos.T / np.sum(self.E_pos, axis=1)).T)
 
 if __name__=="__main__":
     # Read training and test sets.
     print("Reading data (this may take a while).")
     data, vocab, tags, pos_tags = read_conll_ner(data_dir)
 
-    model = HMM(vocab,tags, pos_tags)
-    print("Training model.")
-    model.train(data["train"])
+    for alpha in [ 0.0001, 0.01, .1, 1 ]:
+        model = HMM(vocab,tags, pos_tags)
+        model.alpha = alpha
+        print(f'--------------- Training model with alpha {alpha} -----------------------')
+        model.train(data["train"])
 
-    print("Tagging and evaluating development data.")
-    recall, precision, fscore = eval_ner(model.classify(data["development"]),
-                                         data["development"])
-    print("Recall: %.2f" % (100 * recall))
-    print("Precision: %.2f" % (100 * precision))
-    print("F1-Score: %.2f" % (100 * fscore))
+        print("Tagging and evaluating development data.")
+        recall, precision, fscore = eval_ner(model.classify(data["development"]),
+                                            data["development"])
+        print("Recall: %.2f" % (100 * recall))
+        print("Precision: %.2f" % (100 * precision))
+        print("F1-Score: %.2f" % (100 * fscore))
